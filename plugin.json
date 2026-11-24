@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fmr-sdmx-mcp",
+  "version": "0.1.0",
+  "description": "Validate and transform statistical data through the Thailand NSO Fusion Metadata Registry.",
+  "author": {
+    "name": "Thailand National Statistical Office"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "fmr-sdmx-mcp",
+        "shortDescription": "Transform data with NSO FMR",
+        "longDescription": "Validate CSV, XLSX and SDMX datasets against structures in the Thailand NSO Fusion Metadata Registry, then export the validated result in a selected SDMX format.",
+        "developerName": "Thailand National Statistical Office",
+        "category": "Data & Analytics",
+        "capabilities": [],
+        "defaultPrompt": "Validate and transform a statistical dataset with the NSO Fusion Metadata Registry. Show validation issues before downloading a converted result."
+      }
+    }
+  }
+}
