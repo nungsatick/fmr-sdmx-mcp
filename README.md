@@ -1,5 +1,7 @@
 # fmr-sdmx-mcp
 
+**English** | [ภาษาไทย](README.th.md)
+
 Local MCP server for the Thailand NSO Fusion Metadata Registry (FMR):
 
 - FMR UI: `https://fmr-sdmx.nso.go.th/fmr/`
