@@ -105,9 +105,10 @@ export class FmrClient {
         const suffix = query.toString();
         return `${this.config.baseUrl}/sdmx/v2/structure/${pathPart}${suffix ? `?${suffix}` : ""}`;
     }
-    async getStructureJson(url) {
+    async getStructureJson(url, timeoutMs) {
         return this.structures.get(url, async () => {
             const response = await ensureOk(await this.http.request(url, {
+                timeoutMs,
                 headers: { Accept: STRUCTURE_JSON, "Accept-Language": `${this.config.language}, en;q=0.8, *;q=0.5`, ...this.authHeaders() },
             }), url);
             const text = await response.text();
@@ -167,12 +168,47 @@ export class FmrClient {
         const url = this.structureUrl("dataflow/*/*/~", { detail: "allstubs" });
         return { flows: dataflowSummaries(await this.getStructureJson(url), this.config.language), url };
     }
-    async categoryData() {
-        const [schemes, categorisations] = await Promise.all([
-            this.getStructureJson(this.structureUrl("categoryscheme/*/*/~")),
-            this.getStructureJson(this.structureUrl("categorisation/*/*/~")),
-        ]);
-        return { categories: categoriesFromSchemes(schemes, this.config.language), index: categorisationIndex(categorisations) };
+    async categorySchemes() {
+        return categoriesFromSchemes(await this.getStructureJson(this.structureUrl("categoryscheme/*/*/~")), this.config.language);
+    }
+    /**
+     * Categorisations are slow to query on the NSO FMR (over 60 s). Load them in
+     * the background with a long timeout and wait at most waitMs; callers fall
+     * back to the dataflow-id prefix (DF_01... -> 01DEM) meanwhile.
+     */
+    async categorisations(waitMs) {
+        const loading = this.getStructureJson(this.structureUrl("categorisation/*/*/~"), this.config.uploadTimeoutMs)
+            .then((message) => categorisationIndex(message));
+        loading.catch(() => undefined);
+        let timer;
+        const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(undefined), waitMs); });
+        try {
+            return await Promise.race([loading, timeout]);
+        }
+        catch {
+            return undefined;
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    static prefixIndex(flows, categories) {
+        const index = new Map();
+        for (const flow of flows) {
+            const number = /^DF_(\d{2})/.exec(flow.id)?.[1];
+            if (!number)
+                continue;
+            const ids = categories.filter((category) => category.id.startsWith(number)).map((category) => category.id);
+            if (ids.length)
+                index.set(refKey(flow), ids);
+        }
+        return index;
+    }
+    async categoryData(flows, waitMs) {
+        const [categories, fromFmr] = await Promise.all([this.categorySchemes(), this.categorisations(waitMs)]);
+        if (fromFmr && fromFmr.size)
+            return { categories, index: fromFmr, source: "categorisation" };
+        return { categories, index: FmrClient.prefixIndex(flows, categories), source: "id-prefix" };
     }
     async listDataflows(options = {}) {
         const { flows, url } = await this.allDataflows();
@@ -181,8 +217,13 @@ export class FmrClient {
             items = items.filter((item) => item.agency.toLowerCase() === options.agency.toLowerCase());
         let categoryIndex;
         let categoryError;
+        let categorySource;
+        let categories = [];
         try {
-            categoryIndex = (await this.categoryData()).index;
+            const result = await this.categoryData(flows, options.category ? 15_000 : 1_500);
+            categoryIndex = result.index;
+            categorySource = result.source;
+            categories = result.categories;
         }
         catch (error) {
             categoryError = error instanceof Error ? error.message : String(error);
@@ -190,7 +231,6 @@ export class FmrClient {
                 throw error;
         }
         if (options.category && categoryIndex) {
-            const { categories } = await this.categoryData();
             const wanted = normalizeLabel(options.category);
             const ids = new Set(categories.filter((category) => category.id.toLowerCase() === wanted
                 || normalizeLabel(category.name ?? "").includes(wanted)).map((category) => category.id));
@@ -231,11 +271,13 @@ export class FmrClient {
             returned: page.length,
             dataflows: page,
             cacheAgeSeconds: this.structures.ageSeconds(url) ?? 0,
+            categorySource,
             ...(categoryError ? { categoryWarning: `Categories unavailable: ${categoryError}` } : {}),
         };
     }
     async listCategories() {
-        const [{ categories, index }, { flows }] = await Promise.all([this.categoryData(), this.allDataflows()]);
+        const { flows } = await this.allDataflows();
+        const { categories, index, source } = await this.categoryData(flows, 15_000);
         const counts = new Map();
         for (const flow of flows)
             for (const id of index.get(refKey(flow)) ?? [])
@@ -243,6 +285,8 @@ export class FmrClient {
         return {
             categories: categories.map((category) => ({ ...category, dataflowCount: counts.get(category.id) ?? 0 })),
             uncategorisedDataflows: flows.filter((flow) => !(index.get(refKey(flow)) ?? []).length).length,
+            categorySource: source,
+            ...(source === "id-prefix" ? { note: "Counts inferred from dataflow id prefixes (DF_01... -> 01DEM) while FMR's slow categorisation query loads in the background." } : {}),
         };
     }
     async getStructure(options) {

@@ -55,6 +55,14 @@ export declare class FmrClient {
     private resolveDataflow;
     health(): Promise<Record<string, unknown>>;
     private allDataflows;
+    private categorySchemes;
+    /**
+     * Categorisations are slow to query on the NSO FMR (over 60 s). Load them in
+     * the background with a long timeout and wait at most waitMs; callers fall
+     * back to the dataflow-id prefix (DF_01... -> 01DEM) meanwhile.
+     */
+    private categorisations;
+    private static prefixIndex;
     private categoryData;
     listDataflows(options?: {
         agency?: string;

@@ -4,10 +4,12 @@
 
 MCP server ที่ติดตั้งและรันบนเครื่องของผู้ใช้ สำหรับทำงานกับ Fusion Metadata Registry (FMR) ของสำนักงานสถิติแห่งชาติ (สสช.)
 
-- หน้าเว็บ FMR: `https://fmr-sdmx.nso.go.th/fmr/`
-- SDMX v2 structure API (ใช้ค้นหาโครงสร้าง): `https://fmr-sdmx.nso.go.th/fmr/sdmx/v2/structure`
-- SDMX v1 REST API (XML ดิบ): `https://fmr-sdmx.nso.go.th/fmr/ws/public/sdmxapi/rest`
-- API ตรวจสอบข้อมูลแบบ asynchronous: `https://fmr-sdmx.nso.go.th/fmr/ws/public/data`
+- หน้าเว็บ FMR: `https://sdmx.nso.go.th/FusionMetadataRegistry/`
+- SDMX v2 structure API (ใช้ค้นหาโครงสร้าง): `https://sdmx.nso.go.th/FusionMetadataRegistry/sdmx/v2/structure`
+- SDMX v1 REST API (XML ดิบ): `https://sdmx.nso.go.th/FusionMetadataRegistry/ws/public/sdmxapi/rest`
+- API ตรวจสอบข้อมูลแบบ asynchronous: `https://sdmx.nso.go.th/FusionMetadataRegistry/ws/public/data`
+
+ที่อยู่เดิม `https://fmr-sdmx.nso.go.th/fmr` ยังใช้งานได้ ถ้าต้องการใช้ต่อให้ตั้ง `FMR_BASE_URL` เป็นที่อยู่นั้น
 
 เครื่องมือนี้ใช้สำหรับ:
 
@@ -37,7 +39,7 @@ MCP server ที่ติดตั้งและรันบนเครื่
   ```
 
   ติดตั้งเสร็จแล้วให้ปิดแล้วเปิด terminal ใหม่ เพื่อให้เรียก `node` และ `npm` ได้
-- **เข้าถึง `fmr-sdmx.nso.go.th` ได้** จะต่อตรงหรือผ่าน proxy ก็ได้ ดู `HTTPS_PROXY` ในหัวข้อ [การตั้งค่า](#configuration)
+- **เข้าถึง `sdmx.nso.go.th` ได้** จะต่อตรงหรือผ่าน proxy ก็ได้ ดู `HTTPS_PROXY` ในหัวข้อ [การตั้งค่า](#configuration)
 - **โปรแกรม AI ที่รองรับ MCP อย่างน้อยหนึ่งตัว** ได้แก่ Claude Desktop, Claude Code, OpenAI Codex หรือ Google Antigravity
 - **Git** (ไม่บังคับ) ช่วยให้อัปเดตง่ายขึ้น ถ้าไม่มีก็ดาวน์โหลดเป็นไฟล์ ZIP แทนได้
 
@@ -82,7 +84,7 @@ test ทุกข้อควรผ่าน ชุดทดสอบนี้�
 node dist/index.js
 ```
 
-ควรขึ้นข้อความ `fmr-sdmx-mcp 0.2.0 connected to https://fmr-sdmx.nso.go.th/fmr` แล้วโปรแกรมจะรอการเชื่อมต่อจากโปรแกรม AI กด `Ctrl+C` เพื่อหยุด
+ควรขึ้นข้อความ `fmr-sdmx-mcp 0.2.0 connected to https://sdmx.nso.go.th/FusionMetadataRegistry` แล้วโปรแกรมจะรอการเชื่อมต่อจากโปรแกรม AI กด `Ctrl+C` เพื่อหยุด
 
 ### 5. จด path สองรายการ
 
@@ -136,7 +138,7 @@ npm run build
 | --- | --- |
 | ขึ้นว่าไม่รู้จักคำสั่ง `node` | ติดตั้ง Node.js (ขั้นที่ 1) แล้วเปิด terminal ใหม่ หรือใส่ path เต็มของ `node.exe` ในการตั้งค่าของโปรแกรม AI |
 | โปรแกรม AI แสดงว่าเซิร์ฟเวอร์ล้มเหลว หรือไม่เห็นเครื่องมือ | ตรวจ path ของ `dist/index.js` (ใน JSON ต้องเขียน `\` เป็น `\\` ทุกตัว) ตรวจว่า `npm run build` สำเร็จ แล้วปิดโปรแกรม AI ให้สนิทก่อนเปิดใหม่ |
-| `fmr_health` แสดง `ok: false` หรือหมดเวลา (timeout) | ลองเปิด `https://fmr-sdmx.nso.go.th/fmr/` ในเบราว์เซอร์ ถ้าใช้เครือข่ายสำนักงาน ให้ใส่ `HTTPS_PROXY` ใน `env` ของโปรแกรม AI |
+| `fmr_health` แสดง `ok: false` หรือหมดเวลา (timeout) | ลองเปิด `https://sdmx.nso.go.th/FusionMetadataRegistry/` ในเบราว์เซอร์ ถ้าใช้เครือข่ายสำนักงาน ให้ใส่ `HTTPS_PROXY` ใน `env` ของโปรแกรม AI |
 | "Path is outside FMR_ALLOWED_ROOTS" | เพิ่มโฟลเดอร์นั้นใน `FMR_ALLOWED_ROOTS` (หลายโฟลเดอร์คั่นด้วย `;`) แล้วเปิดโปรแกรม AI ใหม่ |
 | "FMR has no dataset for uid …" | ไฟล์ที่อัปโหลดไว้ใน FMR หมดอายุแล้ว (ประมาณ 15 นาที) ให้ตรวจสอบไฟล์ใหม่อีกครั้ง |
 
@@ -155,7 +157,7 @@ npm start       # รันเซิร์ฟเวอร์ผ่าน stdio (
 
 | ตัวแปร | ค่าเริ่มต้น | ความหมาย |
 | --- | --- | --- |
-| `FMR_BASE_URL` | `https://fmr-sdmx.nso.go.th/fmr` | URL หลักของ FMR |
+| `FMR_BASE_URL` | `https://sdmx.nso.go.th/FusionMetadataRegistry` | URL หลักของ FMR |
 | `FMR_ALLOWED_ROOTS` | โฟลเดอร์ที่ plugin ทำงานอยู่ | โฟลเดอร์ (path เต็ม) ที่เครื่องมืออ่านหรือเขียนไฟล์ได้ หลายโฟลเดอร์คั่นด้วย `;` |
 | `FMR_MAX_FILE_MB` | `100` | ขนาดไฟล์อัปโหลดสูงสุด (MB) |
 | `FMR_TIMEOUT_SECONDS` | `60` | เวลารอสูงสุดของคำขอทั่วไปหนึ่งครั้ง |
@@ -199,7 +201,7 @@ npm start
 
 ```powershell
 claude mcp add --scope user fmr-sdmx-mcp `
-  -e FMR_BASE_URL=https://fmr-sdmx.nso.go.th/fmr `
+  -e FMR_BASE_URL=https://sdmx.nso.go.th/FusionMetadataRegistry `
   -e "FMR_ALLOWED_ROOTS=C:\data\sdmx" `
   -e FMR_LANGUAGE=th `
   -- node "C:\path\to\fmr-sdmx-mcp\dist\index.js"
@@ -225,7 +227,7 @@ claude mcp get fmr-sdmx-mcp     # ควรแสดง: Status: ✔ Connected
          "command": "node",
          "args": ["C:\\path\\to\\fmr-sdmx-mcp\\dist\\index.js"],
          "env": {
-           "FMR_BASE_URL": "https://fmr-sdmx.nso.go.th/fmr",
+           "FMR_BASE_URL": "https://sdmx.nso.go.th/FusionMetadataRegistry",
            "FMR_ALLOWED_ROOTS": "C:\\data\\sdmx",
            "FMR_LANGUAGE": "th"
          }
@@ -248,7 +250,7 @@ Codex ทุกรูปแบบอ่านการตั้งค่าจ�
 
 ```powershell
 codex mcp add fmr-sdmx-mcp `
-  --env FMR_BASE_URL=https://fmr-sdmx.nso.go.th/fmr `
+  --env FMR_BASE_URL=https://sdmx.nso.go.th/FusionMetadataRegistry `
   --env "FMR_ALLOWED_ROOTS=C:\data\sdmx" `
   --env FMR_LANGUAGE=th `
   -- node "C:\path\to\fmr-sdmx-mcp\dist\index.js"
@@ -265,7 +267,7 @@ args = ['C:\path\to\fmr-sdmx-mcp\dist\index.js']
 startup_timeout_sec = 30   # ไม่บังคับ; คำขอแรกไปยัง FMR อาจใช้เวลานาน
 
 [mcp_servers.fmr-sdmx-mcp.env]
-FMR_BASE_URL = "https://fmr-sdmx.nso.go.th/fmr"
+FMR_BASE_URL = "https://sdmx.nso.go.th/FusionMetadataRegistry"
 FMR_ALLOWED_ROOTS = 'C:\data\sdmx'
 FMR_LANGUAGE = "th"
 ```
@@ -291,7 +293,7 @@ FMR_LANGUAGE = "th"
          "command": "node",
          "args": ["C:\\path\\to\\fmr-sdmx-mcp\\dist\\index.js"],
          "env": {
-           "FMR_BASE_URL": "https://fmr-sdmx.nso.go.th/fmr",
+           "FMR_BASE_URL": "https://sdmx.nso.go.th/FusionMetadataRegistry",
            "FMR_ALLOWED_ROOTS": "C:\\data\\sdmx",
            "FMR_LANGUAGE": "th"
          }
@@ -366,6 +368,11 @@ FMR_LANGUAGE = "th"
 - การแปลงข้อมูลไม่ใช่การเผยแพร่
 
 ## บันทึกการเปลี่ยนแปลง
+
+### ยังไม่ออกเวอร์ชัน
+
+- ค่าเริ่มต้นของ `FMR_BASE_URL` เปลี่ยนเป็นที่อยู่ใหม่ของ สสช. `https://sdmx.nso.go.th/FusionMetadataRegistry` (เดิม `https://fmr-sdmx.nso.go.th/fmr`) เครื่องที่ตั้ง `FMR_BASE_URL` ไว้เองต้องแก้เป็นค่าใหม่
+- เพิ่มคู่มือติดตั้งสำหรับ Claude Code, Claude Desktop, Codex และ Antigravity และ README ภาษาไทย
 
 ### 0.2.0
 

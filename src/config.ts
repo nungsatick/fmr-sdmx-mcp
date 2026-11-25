@@ -52,7 +52,7 @@ export function splitRoots(value: string | undefined): string[] | undefined {
 
 export function defaultConfig(overrides: Partial<FmrConfig> = {}): FmrConfig {
   const config: FmrConfig = {
-    baseUrl: "https://fmr-sdmx.nso.go.th/fmr",
+    baseUrl: "https://sdmx.nso.go.th/FusionMetadataRegistry",
     allowedRoots: [process.cwd()],
     maxFileBytes: 100 * 1024 * 1024,
     timeoutMs: 60_000,

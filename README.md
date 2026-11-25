@@ -4,10 +4,12 @@
 
 Local MCP server for the Thailand NSO Fusion Metadata Registry (FMR):
 
-- FMR UI: `https://fmr-sdmx.nso.go.th/fmr/`
-- SDMX v2 structure API (used for discovery): `https://fmr-sdmx.nso.go.th/fmr/sdmx/v2/structure`
-- SDMX v1 REST API (raw XML): `https://fmr-sdmx.nso.go.th/fmr/ws/public/sdmxapi/rest`
-- Asynchronous validation API: `https://fmr-sdmx.nso.go.th/fmr/ws/public/data`
+- FMR UI: `https://sdmx.nso.go.th/FusionMetadataRegistry/`
+- SDMX v2 structure API (used for discovery): `https://sdmx.nso.go.th/FusionMetadataRegistry/sdmx/v2/structure`
+- SDMX v1 REST API (raw XML): `https://sdmx.nso.go.th/FusionMetadataRegistry/ws/public/sdmxapi/rest`
+- Asynchronous validation API: `https://sdmx.nso.go.th/FusionMetadataRegistry/ws/public/data`
+
+The previous address, `https://fmr-sdmx.nso.go.th/fmr`, still works. To keep using it, set `FMR_BASE_URL` to it.
 
 It finds dataflows, explains their structure, maps labels to codes, builds SDMX-CSV templates, validates files and downloads converted SDMX output. It deliberately has **no publish tool** and never changes structural metadata.
 
@@ -26,7 +28,7 @@ Follow these steps to install the server on your own computer. It runs locally a
   ```
 
   Close and reopen the terminal afterwards so `node` and `npm` are found.
-- **Network access to `fmr-sdmx.nso.go.th`**, either directly or through a proxy (see `HTTPS_PROXY` under [Configuration](#configuration)).
+- **Network access to `sdmx.nso.go.th`**, either directly or through a proxy (see `HTTPS_PROXY` under [Configuration](#configuration)).
 - **At least one MCP client**: Claude Desktop, Claude Code, OpenAI Codex or Google Antigravity.
 - **Git** (optional). It makes updates easier; you can download a ZIP instead.
 
@@ -63,7 +65,7 @@ All tests should pass. They use a mock FMR and do not need the network. To check
 node dist/index.js
 ```
 
-It should print `fmr-sdmx-mcp 0.2.0 connected to https://fmr-sdmx.nso.go.th/fmr` and then wait for a client. Press `Ctrl+C` to stop it.
+It should print `fmr-sdmx-mcp 0.2.0 connected to https://sdmx.nso.go.th/FusionMetadataRegistry` and then wait for a client. Press `Ctrl+C` to stop it.
 
 ### 5. Note two paths
 
@@ -108,7 +110,7 @@ Remove the `fmr-sdmx-mcp` entry from your client (see its section below), restar
 | --- | --- |
 | `node` is not recognized | Install Node.js (step 1), reopen the terminal, or put the full path to `node.exe` in the client configuration |
 | The client shows the server as failed or the tools never appear | Check the path to `dist/index.js` (in JSON every `\` must be `\\`), make sure `npm run build` succeeded, and fully restart the client |
-| `fmr_health` shows `ok: false` or a timeout | Open `https://fmr-sdmx.nso.go.th/fmr/` in a browser. On an office network, set `HTTPS_PROXY` in the client's `env` |
+| `fmr_health` shows `ok: false` or a timeout | Open `https://sdmx.nso.go.th/FusionMetadataRegistry/` in a browser. On an office network, set `HTTPS_PROXY` in the client's `env` |
 | "Path is outside FMR_ALLOWED_ROOTS" | Add that folder to `FMR_ALLOWED_ROOTS` (separate several folders with `;`) and restart the client |
 | "FMR has no dataset for uid …" | The FMR upload expired after about 15 minutes. Validate the file again |
 
@@ -126,7 +128,7 @@ The plugin's `mcp.json` runs `dist/index.js` over stdio.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FMR_BASE_URL` | `https://fmr-sdmx.nso.go.th/fmr` | FMR application base URL |
+| `FMR_BASE_URL` | `https://sdmx.nso.go.th/FusionMetadataRegistry` | FMR application base URL |
 | `FMR_ALLOWED_ROOTS` | plugin working directory | Semicolon-separated absolute folders tools may read or write |
 | `FMR_MAX_FILE_MB` | `100` | Largest upload |
 | `FMR_TIMEOUT_SECONDS` | `60` | Timeout of one ordinary request |
@@ -164,7 +166,7 @@ Use the same server name, `fmr-sdmx-mcp`, in every client. After changing a clie
 
 ```powershell
 claude mcp add --scope user fmr-sdmx-mcp `
-  -e FMR_BASE_URL=https://fmr-sdmx.nso.go.th/fmr `
+  -e FMR_BASE_URL=https://sdmx.nso.go.th/FusionMetadataRegistry `
   -e "FMR_ALLOWED_ROOTS=C:\data\sdmx" `
   -e FMR_LANGUAGE=th `
   -- node "C:\path\to\fmr-sdmx-mcp\dist\index.js"
@@ -188,7 +190,7 @@ claude mcp get fmr-sdmx-mcp     # should show: Status: ✔ Connected
          "command": "node",
          "args": ["C:\\path\\to\\fmr-sdmx-mcp\\dist\\index.js"],
          "env": {
-           "FMR_BASE_URL": "https://fmr-sdmx.nso.go.th/fmr",
+           "FMR_BASE_URL": "https://sdmx.nso.go.th/FusionMetadataRegistry",
            "FMR_ALLOWED_ROOTS": "C:\\data\\sdmx",
            "FMR_LANGUAGE": "th"
          }
@@ -207,7 +209,7 @@ All Codex clients read `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\co
 
 ```powershell
 codex mcp add fmr-sdmx-mcp `
-  --env FMR_BASE_URL=https://fmr-sdmx.nso.go.th/fmr `
+  --env FMR_BASE_URL=https://sdmx.nso.go.th/FusionMetadataRegistry `
   --env "FMR_ALLOWED_ROOTS=C:\data\sdmx" `
   --env FMR_LANGUAGE=th `
   -- node "C:\path\to\fmr-sdmx-mcp\dist\index.js"
@@ -224,7 +226,7 @@ args = ['C:\path\to\fmr-sdmx-mcp\dist\index.js']
 startup_timeout_sec = 30   # optional; the first FMR request can be slow
 
 [mcp_servers.fmr-sdmx-mcp.env]
-FMR_BASE_URL = "https://fmr-sdmx.nso.go.th/fmr"
+FMR_BASE_URL = "https://sdmx.nso.go.th/FusionMetadataRegistry"
 FMR_ALLOWED_ROOTS = 'C:\data\sdmx'
 FMR_LANGUAGE = "th"
 ```
@@ -246,7 +248,7 @@ Single-quoted TOML strings keep Windows backslashes as they are. A syntax error 
          "command": "node",
          "args": ["C:\\path\\to\\fmr-sdmx-mcp\\dist\\index.js"],
          "env": {
-           "FMR_BASE_URL": "https://fmr-sdmx.nso.go.th/fmr",
+           "FMR_BASE_URL": "https://sdmx.nso.go.th/FusionMetadataRegistry",
            "FMR_ALLOWED_ROOTS": "C:\\data\\sdmx",
            "FMR_LANGUAGE": "th"
          }
@@ -296,6 +298,10 @@ Validation and conversion (temporary; nothing is published):
 - Blank observations are missing values, never zero. Conversion is not publication.
 
 ## Changelog
+
+### Unreleased
+- Default `FMR_BASE_URL` is now the new NSO address `https://sdmx.nso.go.th/FusionMetadataRegistry` (was `https://fmr-sdmx.nso.go.th/fmr`). Existing installations that set `FMR_BASE_URL` explicitly must update it.
+- Installation guide for Claude Code, Claude Desktop, Codex and Antigravity, and a Thai README.
 
 ### 0.2.0
 - New tools: `fmr_list_categories`, `fmr_describe_dataflow`, `fmr_get_codes`, `fmr_map_codes`, `fmr_csv_template`, `fmr_validate`.

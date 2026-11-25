@@ -112,7 +112,7 @@
 - **URN** รูปแบบ `urn:sdmx:org.sdmx.infomodel.datastructure.Dataflow=AGENCY:ID(VERSION)`
 - **Structure Map / Representation Map** ใช้แปลงข้อมูลข้าม DSD หรือแปลงรหัส
 
-## 9. ข้อสังเกตจากเซิร์ฟเวอร์ NSO จริง (ตรวจผ่านเบราว์เซอร์ 25 พ.ย. 2569)
+## 9. ข้อสังเกตจากเซิร์ฟเวอร์ NSO จริง (ตรวจผ่านเบราว์เซอร์ 25 พ.ย. 2569, ที่อยู่เดิม `https://fmr-sdmx.nso.go.th/fmr`)
 
 - มี **960 dataflows** (TNSO 956, IAEG-SDGs 4) ชื่อเกือบทั้งหมดเป็นภาษาไทย (`th`) มีภาษาอังกฤษแค่ 2 รายการ
 - `GET .../ws/public/sdmxapi/rest/dataflow/all/all/latest` (XML) มีขนาด **1.26 MB** ส่วน `GET .../sdmx/v2/structure/dataflow/*/*/~?detail=allstubs` (JSON) มีขนาด 470 KB
@@ -123,6 +123,24 @@
 - DSD ตัวอย่างมี dimensions `POP_IND, SEX, AREA, CWT, UNIT_MUL, UNIT, FREQ` + `TIME_PERIOD`, measure `OBS_VALUE` (Double), attributes `NOTE`, `SOURCE` (optional)
 - รหัสพิเศษใน codelist: `_T` รวม, `_O` อื่นๆ, `_U` ไม่ระบุ/ไม่ทราบ, `_Z` ไม่เข้าข่าย
 - Category scheme `TNSO:CAT_STAT_SECT` มี 21 สาขา (01DEM ประชากร … 21ENV สิ่งแวดล้อม) ตรงกับเลขนำหน้า dataflow id เช่น `DF_01DI_...`
+
+### 9.1 ที่อยู่ใหม่ `https://sdmx.nso.go.th/FusionMetadataRegistry` (ตรวจ 25 พ.ย. 2569)
+
+ตั้งแต่ครั้งนี้ MCP ใช้ที่อยู่นี้เป็นค่าเริ่มต้นแทน `https://fmr-sdmx.nso.go.th/fmr` ที่อยู่เดิมยังใช้งานได้ ตั้ง `FMR_BASE_URL` เพื่อเลือกที่อยู่ได้
+
+- path ของ API เหมือนเดิมทุกตัว (`/sdmx/v2/structure`, `/ws/public/sdmxapi/rest`, `/ws/public/data/...`) ต่างกันแค่ base URL
+- ด้านหน้ามี **Huawei CloudWAF** (`Server: CloudWAF`) ซึ่งตั้ง cookie `HWWAFSESID` / `HWWAFSESTIME` เพิ่ม การอัปโหลดไฟล์แบบ multipart ผ่าน WAF ได้ตามปกติ
+- มี **961 dataflows** (TNSO 957, IAEG-SDGs 4) ขณะที่ที่อยู่เดิมมี 960 (TNSO 956)
+- มี category scheme 15 ชุด (ที่อยู่เดิมมี 11) ส่วน `CAT_STAT_SECT` ยังมี 21 สาขาเหมือนเดิม
+- **categorisation ตอบเร็ว**: `GET .../sdmx/v2/structure/categorisation/*/*/~` ใช้เวลาประมาณ 0.3 วินาที ได้ 1,225 รายการ (ผูกกับ `CAT_STAT_SECT` 978 รายการ)
+  - ที่อยู่เดิมไม่ตอบภายใน 120 วินาที MCP จึงต้องเดาหมวดหมู่จากเลขนำหน้า dataflow id แทน
+  - ที่อยู่ใหม่จึงได้หมวดหมู่ตาม categorisation จริงใน FMR
+  - เพราะใช้วิธีนับต่างกัน จำนวน dataflow ต่อหมวดของสองที่อยู่จึงเทียบกันตรง ๆ ไม่ได้
+- `DF_01DI_IND_AGING(1.0)` มีโครงสร้างเหมือนเดิม และยังใช้ `CL_AREA(1.6)`
+- v1 REST API ตอบเป็น JSON เมื่อส่ง Accept `application/json` (`dataflow/all/all/latest` มีขนาด 2.8 MB)
+- `loadStatus` ของ uid ที่ไม่มีอยู่ยังตอบ HTTP 200 พร้อม `{"Error":["No Dataset details found for UID: ..."],"Status":500}` เหมือนเดิม
+- `/ws/public/productinfo` ยังได้ 404
+- ความเร็ว: health ประมาณ 60–90 ms ส่วน `fmr_list_categories` ตอบในไม่กี่ร้อยมิลลิวินาที (ที่อยู่เดิมต้องรอ 15 วินาทีก่อนเปลี่ยนไปเดาจากเลขนำหน้า)
 
 ## 10. การปรับปรุง MCP (เวอร์ชัน 0.2.0)
 

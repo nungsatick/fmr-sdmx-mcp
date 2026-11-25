@@ -6,7 +6,7 @@
         "C:\\path\\to\\fmr-sdmx-mcp\\dist\\index.js"
       ],
       "env": {
-        "FMR_BASE_URL": "https://fmr-sdmx.nso.go.th/fmr",
+        "FMR_BASE_URL": "https://sdmx.nso.go.th/FusionMetadataRegistry",
         "FMR_ALLOWED_ROOTS": "C:\\data\\sdmx",
         "FMR_LANGUAGE": "th"
       }
