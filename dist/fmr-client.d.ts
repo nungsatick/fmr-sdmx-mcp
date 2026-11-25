@@ -1,3 +1,8 @@
+import { type FmrConfig } from "./config.js";
+import { HttpClient } from "./http.js";
+import { type DataflowDescription } from "./structure.js";
+import { type SummaryOptions, type ValidationSummary } from "./validation.js";
+export { isTerminalStatus } from "./validation.js";
 export declare const OUTPUT_FORMATS: {
     readonly "sdmx-csv-1.0": {
         readonly accept: "application/vnd.sdmx.data+csv;version=1.0.0";
@@ -21,51 +26,93 @@ export declare const OUTPUT_FORMATS: {
     };
 };
 export type OutputFormat = keyof typeof OUTPUT_FORMATS;
-export interface ClientOptions {
-    baseUrl?: string;
-    allowedRoots?: string[];
-    maxFileBytes?: number;
-    username?: string;
-    password?: string;
+export interface DataflowLookup {
+    urn?: string;
+    agency?: string;
+    id?: string;
+    version?: string;
 }
-export interface DataflowSummary {
-    agency: string;
-    id: string;
-    version: string;
-    name?: string;
-    description?: string;
-}
-export declare function parseDataflows(xml: string): DataflowSummary[];
-export declare function isTerminalStatus(status: unknown): boolean;
+type J = any;
 export declare class FmrClient {
-    readonly baseUrl: string;
-    readonly allowedRoots: string[];
-    readonly maxFileBytes: number;
-    private readonly username?;
-    private readonly password?;
+    readonly config: FmrConfig;
+    readonly http: HttpClient;
     private readonly sessions;
-    constructor(options?: ClientOptions);
+    private readonly structures;
+    constructor(config?: Partial<FmrConfig> | FmrConfig, http?: HttpClient);
+    get baseUrl(): string;
+    get allowedRoots(): string[];
     private authHeaders;
+    private purgeSessions;
     private sessionHeaders;
+    private touch;
     private rememberSession;
-    private assertAllowed;
-    private responseError;
+    private expiryHint;
+    assertAllowed(filePath: string): string;
+    private prepareOutput;
+    private structureUrl;
+    private getStructureJson;
+    private static segment;
+    private resolveDataflow;
     health(): Promise<Record<string, unknown>>;
+    private allDataflows;
+    private categoryData;
     listDataflows(options?: {
         agency?: string;
         search?: string;
+        category?: string;
         limit?: number;
+        offset?: number;
     }): Promise<Record<string, unknown>>;
+    listCategories(): Promise<Record<string, unknown>>;
     getStructure(options: {
         resource: string;
         agency: string;
         id: string;
         version?: string;
         references?: string;
+        detail?: string;
+        format?: "json" | "xml";
         maxChars?: number;
     }): Promise<Record<string, unknown>>;
+    private dataflowMessage;
+    describeDataflow(lookup: DataflowLookup): Promise<DataflowDescription>;
+    /** describeDataflow with long allowed-code lists shortened for display. */
+    describeDataflowForDisplay(lookup: DataflowLookup, maxAllowedCodes?: number): Promise<DataflowDescription>;
+    private codesFor;
+    getCodes(options: {
+        codelistUrn?: string;
+        agency?: string;
+        id?: string;
+        version?: string;
+        dataflow?: DataflowLookup;
+        component?: string;
+        search?: string;
+        parent?: string;
+        limit?: number;
+        offset?: number;
+    }): Promise<Record<string, unknown>>;
+    mapCodes(options: {
+        dataflow: DataflowLookup;
+        component: string;
+        values: string[];
+        outputPath?: string;
+        overwrite?: boolean;
+    }): Promise<Record<string, unknown>>;
+    csvTemplate(options: {
+        dataflow: DataflowLookup;
+        outputPath?: string;
+        includeOptionalAttributes?: boolean;
+        overwrite?: boolean;
+    }): Promise<Record<string, unknown>>;
     loadData(filePath: string): Promise<Record<string, unknown>>;
-    getValidationStatus(uid: string): Promise<Record<string, unknown>>;
+    /** Raw FMR validation report. Throws a clear error for unknown/expired uids. */
+    getValidationReport(uid: string): Promise<J>;
+    getValidationStatus(uid: string, options?: {
+        detail?: "summary" | "full";
+        reportPath?: string;
+        overwrite?: boolean;
+    } & SummaryOptions): Promise<Record<string, unknown>>;
+    private writeReport;
     revalidate(uid: string, structureRefs: string[]): Promise<Record<string, unknown>>;
     download(options: {
         uid: string;
@@ -76,15 +123,38 @@ export declare class FmrClient {
         zip?: boolean;
         includeMetrics?: boolean;
         unmapped?: boolean;
+        overwrite?: boolean;
     }): Promise<Record<string, unknown>>;
-    waitForTerminal(uid: string, timeoutSeconds?: number, pollIntervalMs?: number): Promise<Record<string, unknown>>;
+    waitForTerminal(uid: string, timeoutSeconds?: number): Promise<J>;
+    /** Upload, wait, and revalidate with structure refs when FMR needs them. */
+    validateFile(options: {
+        inputPath: string;
+        structureRefs?: string[];
+        timeoutSeconds?: number;
+        reportPath?: string;
+    } & SummaryOptions): Promise<{
+        uid: string;
+        load: Record<string, unknown>;
+        report: J;
+        summary: ValidationSummary;
+        revalidated: boolean;
+        reportPath?: string;
+    }>;
+    validateOnly(options: {
+        inputPath: string;
+        structureRefs?: string[];
+        timeoutSeconds?: number;
+        reportPath?: string;
+    } & SummaryOptions): Promise<Record<string, unknown>>;
     transformData(options: {
         inputPath: string;
         outputPath: string;
         outputFormat: OutputFormat;
-        structureRef?: string;
+        structureRefs?: string[];
         timeoutSeconds?: number;
         datasetIndex?: number;
-    }): Promise<Record<string, unknown>>;
+        overwrite?: boolean;
+        reportPath?: string;
+    } & SummaryOptions): Promise<Record<string, unknown>>;
 }
-export declare function clientFromEnvironment(): FmrClient;
+export declare function clientFromEnvironment(env?: NodeJS.ProcessEnv): FmrClient;

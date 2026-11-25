@@ -1,17 +1,22 @@
 ---
 name: fmr-data-transform
-description: Use when validating or converting CSV, XLSX, SDMX-CSV, SDMX-JSON, or SDMX-ML data through the Thailand NSO Fusion Metadata Registry.
+description: Use when finding NSO dataflows, preparing statistical tables as SDMX, mapping labels to codes, or validating/converting CSV, XLSX, SDMX-CSV, SDMX-JSON or SDMX-ML data through the Thailand NSO Fusion Metadata Registry.
 ---
 
-# Transform data with NSO FMR
+# Prepare, validate and convert data with NSO FMR
 
-1. Call `fmr_health` before the first operation in a task.
-2. Use `fmr_list_dataflows` to identify the authoritative target structure. Do not guess an agency, dataflow, DSD, version, dimension, or code.
-3. If needed, call `fmr_get_structure` to inspect the selected Dataflow, DSD, Codelist, or Concept Scheme.
-4. Prefer `fmr_transform_data` for a complete upload, validation, and conversion workflow.
-5. For diagnosis or manual control, use `fmr_load_data`, `fmr_get_validation_status`, `fmr_revalidate`, and `fmr_download` separately.
-6. Treat blank observations as missing, never as zero. Never generate statistical observations.
-7. Report all validation errors and warnings before presenting a converted file as usable.
-8. A successful conversion does not authorize publication. This plugin intentionally has no publish tool.
+## 1. Find the target structure
+1. Call `fmr_health` once at the start of a task.
+2. Find the dataflow with `fmr_list_dataflows` (search in Thai or English, or filter by `category` from `fmr_list_categories`). Never guess an agency, dataflow, DSD, version, dimension or code.
+3. Call `fmr_describe_dataflow` to see the dimensions in order, their codelists, mandatory attributes, constraints and the SDMX-CSV header.
 
-For non-SDMX CSV/XLSX input, provide a verified Dataflow, DSD, or Provision Agreement URN as `structure_ref`. Arbitrary presentation spreadsheets may need a separate, reviewable preprocessing step before FMR can read them.
+## 2. Prepare the data (for ordinary tables)
+4. `fmr_csv_template` gives the SDMX-CSV 2.0 header. A file in this layout names its own structure, so no `structure_refs` are needed.
+5. Convert labels to codes with `fmr_map_codes` (one component at a time, pass the column's values). Apply only `matched` results automatically. Show `needs_review`, `ambiguous` and `unmatched` values to the user and wait for confirmation. Use `fmr_get_codes` to look up alternatives.
+6. Treat blank observations as missing, never as zero. Never invent or impute observations. Keep the preprocessing step reviewable (write the reshaped file and the mapping CSV to disk).
+
+## 3. Validate and convert
+7. Use `fmr_validate` to check a file, or `fmr_transform_data` to validate and convert in one step. For files without STRUCTURE columns, pass `structure_refs` with the dataflow URN(s) from step 2, one per dataset.
+8. Read the `summary`: `verdict`, `totalErrors`, and `issueGroups` (type × component with top values). Report every error group to the user before calling a converted file usable. The full report is saved as JSON.
+9. If `verdict` is `structure_problem`, follow `hint`. If an uid has expired (~15 min), upload again.
+10. A successful conversion does not authorise publication. This plugin has no publish tool.

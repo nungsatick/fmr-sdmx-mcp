@@ -1,208 +1,308 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { XMLParser } from "fast-xml-parser";
+import { FormData } from "undici";
+import { TtlCache } from "./cache.js";
+import { configFromEnv, defaultConfig, type FmrConfig } from "./config.js";
+import { ensureOk, FmrHttpError, HttpClient } from "./http.js";
+import {
+  categoriesFromSchemes,
+  categorisationIndex,
+  codesFromCodelist,
+  csvColumnGuide,
+  csvHeader,
+  csvLine,
+  dataflowSummaries,
+  describeDataflowMessage,
+  findCodelist,
+  matchValues,
+  normalizeLabel,
+  parseUrn,
+  refKey,
+  searchCodes,
+  type ArtefactRef,
+  type CategoryInfo,
+  type CodeInfo,
+  type DataflowDescription,
+  type DataflowSummary,
+} from "./structure.js";
+import {
+  errorEnvelope,
+  isTerminalStatus,
+  STATUS_HINTS,
+  STRUCTURE_STATUSES,
+  summarizeValidation,
+  type SummaryOptions,
+  type ValidationSummary,
+} from "./validation.js";
+
+export { isTerminalStatus } from "./validation.js";
 
 export const OUTPUT_FORMATS = {
-  "sdmx-csv-1.0": {
-    accept: "application/vnd.sdmx.data+csv;version=1.0.0",
-    extension: ".csv",
-  },
-  "sdmx-csv-2.0": {
-    accept: "application/vnd.sdmx.data+csv;version=2.0.0",
-    extension: ".csv",
-  },
-  "sdmx-json-1.0": {
-    accept: "application/vnd.sdmx.data+json;version=1.0.0",
-    extension: ".json",
-  },
-  "sdmx-ml-2.1-structure-specific": {
-    accept: "application/vnd.sdmx.structurespecificdata+xml;version=2.1",
-    extension: ".xml",
-  },
-  "sdmx-ml-2.1-generic": {
-    accept: "application/vnd.sdmx.genericdata+xml;version=2.1",
-    extension: ".xml",
-  },
+  "sdmx-csv-1.0": { accept: "application/vnd.sdmx.data+csv;version=1.0.0", extension: ".csv" },
+  "sdmx-csv-2.0": { accept: "application/vnd.sdmx.data+csv;version=2.0.0", extension: ".csv" },
+  "sdmx-json-1.0": { accept: "application/vnd.sdmx.data+json;version=1.0.0", extension: ".json" },
+  "sdmx-ml-2.1-structure-specific": { accept: "application/vnd.sdmx.structurespecificdata+xml;version=2.1", extension: ".xml" },
+  "sdmx-ml-2.1-generic": { accept: "application/vnd.sdmx.genericdata+xml;version=2.1", extension: ".xml" },
 } as const;
 
 export type OutputFormat = keyof typeof OUTPUT_FORMATS;
 
-const terminalStatuses = new Set([
-  "Complete",
-  "IncorrectDSD",
-  "InvalidRef",
-  "MissingDSD",
-  "Error",
-]);
+const STRUCTURE_JSON = "application/vnd.sdmx.structure+json;version=2.0.0";
+const STRUCTURE_XML = "application/vnd.sdmx.structure+xml;version=2.1";
 
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  removeNSPrefix: true,
-  textNodeName: "#text",
-});
+/** v1 resource names that are spelled differently in the SDMX v2 REST API. */
+const V2_RESOURCE: Record<string, string> = {
+  contentconstraint: "dataconstraint",
+  structure: "*",
+};
 
-export interface ClientOptions {
-  baseUrl?: string;
-  allowedRoots?: string[];
-  maxFileBytes?: number;
-  username?: string;
-  password?: string;
-}
-
-export interface DataflowSummary {
-  agency: string;
-  id: string;
-  version: string;
-  name?: string;
-  description?: string;
+export interface DataflowLookup {
+  urn?: string;
+  agency?: string;
+  id?: string;
+  version?: string;
 }
 
 interface StoredSession {
   cookie?: string;
-  createdAt: number;
+  lastUsed: number;
+  filePath?: string;
 }
 
-function asArray<T>(value: T | T[] | undefined): T[] {
-  if (value === undefined) return [];
-  return Array.isArray(value) ? value : [value];
-}
-
-function localisedText(value: unknown): string | undefined {
-  const values = asArray(value as Record<string, unknown> | Record<string, unknown>[] | undefined);
-  for (const item of values) {
-    if (typeof item === "string") return item;
-    if (item && typeof item === "object" && typeof item["#text"] === "string") {
-      return item["#text"] as string;
-    }
-  }
-  return undefined;
-}
-
-function collectByKey(value: unknown, key: string, output: Record<string, unknown>[]): void {
-  if (!value || typeof value !== "object") return;
-  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
-    if (childKey === key) {
-      for (const item of asArray(childValue as Record<string, unknown> | Record<string, unknown>[])) {
-        if (item && typeof item === "object") output.push(item);
-      }
-    }
-    collectByKey(childValue, key, output);
-  }
-}
-
-export function parseDataflows(xml: string): DataflowSummary[] {
-  const document = parser.parse(xml);
-  const nodes: Record<string, unknown>[] = [];
-  collectByKey(document, "Dataflow", nodes);
-  const unique = new Map<string, DataflowSummary>();
-  for (const node of nodes) {
-    const agency = String(node["@_agencyID"] ?? "");
-    const id = String(node["@_id"] ?? "");
-    const version = String(node["@_version"] ?? "");
-    if (!agency || !id) continue;
-    const item: DataflowSummary = {
-      agency,
-      id,
-      version,
-      name: localisedText(node.Name),
-      description: localisedText(node.Description),
-    };
-    unique.set(`${agency}:${id}:${version}`, item);
-  }
-  return [...unique.values()];
-}
-
-export function isTerminalStatus(status: unknown): boolean {
-  return typeof status === "string" && terminalStatuses.has(status);
-}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type J = any;
 
 export class FmrClient {
-  readonly baseUrl: string;
-  readonly allowedRoots: string[];
-  readonly maxFileBytes: number;
-  private readonly username?: string;
-  private readonly password?: string;
+  readonly config: FmrConfig;
+  readonly http: HttpClient;
   private readonly sessions = new Map<string, StoredSession>();
+  private readonly structures: TtlCache<J>;
 
-  constructor(options: ClientOptions = {}) {
-    this.baseUrl = (options.baseUrl ?? "https://fmr-sdmx.nso.go.th/fmr").replace(/\/$/, "");
-    this.allowedRoots = (options.allowedRoots ?? [process.cwd()]).map((root) => path.resolve(root));
-    this.maxFileBytes = options.maxFileBytes ?? 100 * 1024 * 1024;
-    this.username = options.username;
-    this.password = options.password;
+  constructor(config: Partial<FmrConfig> | FmrConfig = {}, http?: HttpClient) {
+    this.config = defaultConfig(config);
+    this.http = http ?? new HttpClient({ timeoutMs: this.config.timeoutMs, retries: this.config.retries, proxyUrl: this.config.proxyUrl });
+    this.structures = new TtlCache<J>(this.config.cacheTtlMs);
   }
+
+  get baseUrl(): string {
+    return this.config.baseUrl;
+  }
+
+  get allowedRoots(): string[] {
+    return this.config.allowedRoots;
+  }
+
+  // ------------------------------------------------------------ plumbing
 
   private authHeaders(): Record<string, string> {
-    if (!this.username && !this.password) return {};
-    if (!this.username || !this.password) {
-      throw new Error("Both FMR_USERNAME and FMR_PASSWORD must be set together.");
-    }
-    return { Authorization: `Basic ${Buffer.from(`${this.username}:${this.password}`).toString("base64")}` };
+    const { username, password } = this.config;
+    if (!username && !password) return {};
+    if (!username || !password) throw new Error("Both FMR_USERNAME and FMR_PASSWORD must be set together.");
+    return { Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}` };
   }
 
-  private sessionHeaders(uid?: string): Record<string, string> {
-    const cookie = uid ? this.sessions.get(uid)?.cookie : undefined;
+  private purgeSessions(): void {
+    // Keep entries a while past FMR's own expiry so the error can say "expired".
+    const cutoff = Date.now() - this.config.sessionTtlMs * 4;
+    for (const [uid, session] of this.sessions) if (session.lastUsed < cutoff) this.sessions.delete(uid);
+  }
+
+  private sessionHeaders(uid: string): Record<string, string> {
+    this.purgeSessions();
+    const cookie = this.sessions.get(uid)?.cookie;
     return cookie ? { Cookie: cookie } : {};
   }
 
-  private rememberSession(uid: string, response: Response): void {
-    const headersWithCookies = response.headers as Headers & { getSetCookie?: () => string[] };
-    const setCookies = headersWithCookies.getSetCookie?.() ?? [];
-    const cookie = setCookies.map((value) => value.split(";", 1)[0]).filter(Boolean).join("; ") || undefined;
-    this.sessions.set(uid, { cookie, createdAt: Date.now() });
+  private touch(uid: string): void {
+    const session = this.sessions.get(uid);
+    if (session) session.lastUsed = Date.now();
   }
 
-  private assertAllowed(filePath: string): string {
+  private rememberSession(uid: string, setCookies: string[], filePath?: string): void {
+    const cookie = setCookies.map((value) => value.split(";", 1)[0]).filter(Boolean).join("; ") || undefined;
+    this.sessions.set(uid, { cookie, lastUsed: Date.now(), filePath });
+  }
+
+  private expiryHint(uid: string): string {
+    const session = this.sessions.get(uid);
+    const minutes = Math.round(this.config.sessionTtlMs / 60_000);
+    if (!session) {
+      return `This MCP process has no record of uid ${uid} (it may come from another session or the server was restarted). Upload the file again with fmr_load_data.`;
+    }
+    const idle = Math.round((Date.now() - session.lastUsed) / 60_000);
+    return `Uploads expire after about ${minutes} minutes of inactivity (this one was idle ~${idle} min). Upload the file again with fmr_load_data${session.filePath ? ` (${session.filePath})` : ""}.`;
+  }
+
+  assertAllowed(filePath: string): string {
+    if (!path.isAbsolute(filePath)) throw new Error(`Path must be absolute: ${filePath}`);
     const resolved = path.resolve(filePath);
-    const allowed = this.allowedRoots.some((root) => {
+    const allowed = this.config.allowedRoots.some((root) => {
       const relative = path.relative(root, resolved);
       return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
     });
     if (!allowed) {
-      throw new Error(`Path is outside FMR_ALLOWED_ROOTS: ${resolved}`);
+      throw new Error(`Path is outside FMR_ALLOWED_ROOTS (${this.config.allowedRoots.join("; ")}): ${resolved}`);
     }
     return resolved;
   }
 
-  private async responseError(response: Response): Promise<Error> {
-    const body = (await response.text()).slice(0, 4000);
-    return new Error(`FMR request failed (${response.status} ${response.statusText}): ${body}`);
+  private async prepareOutput(outputPath: string, overwrite: boolean): Promise<string> {
+    const resolved = this.assertAllowed(outputPath);
+    if (!overwrite) {
+      const exists = await access(resolved).then(() => true, () => false);
+      if (exists) throw new Error(`Output file already exists: ${resolved}. Pass overwrite=true to replace it.`);
+    }
+    await mkdir(path.dirname(resolved), { recursive: true });
+    return resolved;
   }
 
-  async health(): Promise<Record<string, unknown>> {
-    const endpoint = `${this.baseUrl}/ws/public/sdmxapi/rest/dataflow/all/all/latest?references=none`;
-    const started = Date.now();
-    const response = await fetch(endpoint, {
-      headers: { Accept: "application/vnd.sdmx.structure+xml;version=2.1", ...this.authHeaders() },
+  private structureUrl(pathPart: string, params: Record<string, string | undefined> = {}): string {
+    const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined) as [string, string][]);
+    const suffix = query.toString();
+    return `${this.config.baseUrl}/sdmx/v2/structure/${pathPart}${suffix ? `?${suffix}` : ""}`;
+  }
+
+  private async getStructureJson(url: string): Promise<J> {
+    return this.structures.get(url, async () => {
+      const response = await ensureOk(await this.http.request(url, {
+        headers: { Accept: STRUCTURE_JSON, "Accept-Language": `${this.config.language}, en;q=0.8, *;q=0.5`, ...this.authHeaders() },
+      }), url);
+      const text = await response.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new FmrHttpError(`FMR returned non-JSON structure data for ${url}: ${text.slice(0, 300)}`);
+      }
     });
+  }
+
+  private static segment(value: string | undefined, fallback: string): string {
+    const v = value?.trim() || fallback;
+    return v === "all" ? "*" : v === "latest" ? "~" : encodeURIComponent(v).replace(/%2C/gi, ",");
+  }
+
+  private resolveDataflow(lookup: DataflowLookup): { agency: string; id: string; version: string } {
+    if (lookup.urn) {
+      const parsed = parseUrn(lookup.urn);
+      if (!parsed || !/Dataflow$/.test(parsed.className)) throw new Error(`Not a dataflow URN: ${lookup.urn}`);
+      return { agency: parsed.agency, id: parsed.id, version: parsed.version };
+    }
+    if (!lookup.id) throw new Error("Give a dataflow as urn, or as agency + id (+ version).");
+    return { agency: lookup.agency || "TNSO", id: lookup.id, version: lookup.version || "~" };
+  }
+
+  // ------------------------------------------------------------ health
+
+  async health(): Promise<Record<string, unknown>> {
+    const check = async (url: string, accept: string) => {
+      const started = Date.now();
+      try {
+        const response = await this.http.request(url, { headers: { Accept: accept, ...this.authHeaders() }, retries: 0 });
+        await response.body?.cancel().catch(() => undefined);
+        return { ok: response.ok, status: response.status, elapsedMs: Date.now() - started };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error), elapsedMs: Date.now() - started };
+      }
+    };
+    const [structureApi, dataApi] = await Promise.all([
+      check(this.structureUrl("agencyscheme/*/*/~", { detail: "allstubs" }), STRUCTURE_JSON),
+      // An unknown uid answers 200 with an error envelope: proves the data API is up without uploading.
+      check(`${this.config.baseUrl}/ws/public/data/loadStatus?uid=health-check`, "application/json"),
+    ]);
     return {
-      ok: response.ok,
-      status: response.status,
-      contentType: response.headers.get("content-type"),
-      elapsedMs: Date.now() - started,
-      baseUrl: this.baseUrl,
-      endpoint,
+      ok: structureApi.ok && dataApi.ok,
+      baseUrl: this.config.baseUrl,
+      proxy: this.http.proxy ?? null,
+      structureApi,
+      dataApi,
+      cache: { entries: this.structures.size, ttlSeconds: this.config.cacheTtlMs / 1000 },
+      allowedRoots: this.config.allowedRoots,
     };
   }
 
-  async listDataflows(options: { agency?: string; search?: string; limit?: number } = {}): Promise<Record<string, unknown>> {
-    const agency = options.agency || "all";
-    const endpoint = `${this.baseUrl}/ws/public/sdmxapi/rest/dataflow/${encodeURIComponent(agency)}/all/latest?references=none`;
-    const response = await fetch(endpoint, {
-      headers: { Accept: "application/vnd.sdmx.structure+xml;version=2.1", ...this.authHeaders() },
-    });
-    if (!response.ok) throw await this.responseError(response);
-    const xml = await response.text();
-    const query = options.search?.trim().toLowerCase();
-    let items = parseDataflows(xml);
-    if (query) {
-      items = items.filter((item) => [item.id, item.agency, item.name, item.description]
-        .some((value) => value?.toLowerCase().includes(query)));
+  // ------------------------------------------------------------ discovery
+
+  private async allDataflows(): Promise<{ flows: DataflowSummary[]; url: string }> {
+    const url = this.structureUrl("dataflow/*/*/~", { detail: "allstubs" });
+    return { flows: dataflowSummaries(await this.getStructureJson(url), this.config.language), url };
+  }
+
+  private async categoryData(): Promise<{ categories: CategoryInfo[]; index: Map<string, string[]> }> {
+    const [schemes, categorisations] = await Promise.all([
+      this.getStructureJson(this.structureUrl("categoryscheme/*/*/~")),
+      this.getStructureJson(this.structureUrl("categorisation/*/*/~")),
+    ]);
+    return { categories: categoriesFromSchemes(schemes, this.config.language), index: categorisationIndex(categorisations) };
+  }
+
+  async listDataflows(options: { agency?: string; search?: string; category?: string; limit?: number; offset?: number } = {}): Promise<Record<string, unknown>> {
+    const { flows, url } = await this.allDataflows();
+    let items = flows;
+    if (options.agency) items = items.filter((item) => item.agency.toLowerCase() === options.agency!.toLowerCase());
+
+    let categoryIndex: Map<string, string[]> | undefined;
+    let categoryError: string | undefined;
+    try {
+      categoryIndex = (await this.categoryData()).index;
+    } catch (error) {
+      categoryError = error instanceof Error ? error.message : String(error);
+      if (options.category) throw error;
     }
-    const totalMatched = items.length;
-    items = items.slice(0, options.limit ?? 20);
-    return { endpoint, totalMatched, returned: items.length, dataflows: items };
+    if (options.category && categoryIndex) {
+      const { categories } = await this.categoryData();
+      const wanted = normalizeLabel(options.category);
+      const ids = new Set(categories.filter((category) => category.id.toLowerCase() === wanted
+        || normalizeLabel(category.name ?? "").includes(wanted)).map((category) => category.id));
+      if (!ids.size) throw new Error(`Unknown category "${options.category}". Call fmr_list_categories to see the category ids.`);
+      items = items.filter((item) => (categoryIndex!.get(refKey(item)) ?? []).some((id) => ids.has(id)));
+    }
+
+    const query = options.search?.trim();
+    if (query) {
+      const tokens = normalizeLabel(query).split(" ").filter(Boolean);
+      const scored: { item: DataflowSummary; rank: number }[] = [];
+      for (const item of items) {
+        const haystack = normalizeLabel([item.id, item.agency, ...Object.values(item.names ?? {}), item.description ?? ""].join(" "));
+        const compactHaystack = haystack.replace(/ /g, "");
+        if (!tokens.every((token) => haystack.includes(token) || compactHaystack.includes(token))) continue;
+        const id = item.id.toLowerCase();
+        const q = query.toLowerCase();
+        const rank = id === q ? 0 : id.startsWith(q) ? 1 : normalizeLabel(item.name ?? "").includes(normalizeLabel(query)) ? 2 : 3;
+        scored.push({ item, rank });
+      }
+      items = scored.sort((a, b) => a.rank - b.rank).map((entry) => entry.item);
+    }
+
+    const offset = options.offset ?? 0;
+    const limit = options.limit ?? 20;
+    const page = items.slice(offset, offset + limit).map((item) => ({
+      urn: item.urn,
+      agency: item.agency,
+      id: item.id,
+      version: item.version,
+      name: item.name,
+      categories: categoryIndex?.get(refKey(item)),
+    }));
+    return {
+      totalDataflows: flows.length,
+      totalMatched: items.length,
+      offset,
+      returned: page.length,
+      dataflows: page,
+      cacheAgeSeconds: this.structures.ageSeconds(url) ?? 0,
+      ...(categoryError ? { categoryWarning: `Categories unavailable: ${categoryError}` } : {}),
+    };
+  }
+
+  async listCategories(): Promise<Record<string, unknown>> {
+    const [{ categories, index }, { flows }] = await Promise.all([this.categoryData(), this.allDataflows()]);
+    const counts = new Map<string, number>();
+    for (const flow of flows) for (const id of index.get(refKey(flow)) ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
+    return {
+      categories: categories.map((category) => ({ ...category, dataflowCount: counts.get(category.id) ?? 0 })),
+      uncategorisedDataflows: flows.filter((flow) => !(index.get(refKey(flow)) ?? []).length).length,
+    };
   }
 
   async getStructure(options: {
@@ -211,66 +311,318 @@ export class FmrClient {
     id: string;
     version?: string;
     references?: string;
+    detail?: string;
+    format?: "json" | "xml";
     maxChars?: number;
   }): Promise<Record<string, unknown>> {
-    const endpoint = `${this.baseUrl}/ws/public/sdmxapi/rest/${encodeURIComponent(options.resource)}/${encodeURIComponent(options.agency)}/${encodeURIComponent(options.id)}/${encodeURIComponent(options.version ?? "latest")}?references=${encodeURIComponent(options.references ?? "none")}`;
-    const response = await fetch(endpoint, {
-      headers: { Accept: "application/vnd.sdmx.structure+xml;version=2.1", ...this.authHeaders() },
-    });
-    if (!response.ok) throw await this.responseError(response);
+    const format = options.format ?? "json";
+    let url: string;
+    let accept: string;
+    if (format === "json") {
+      const resource = V2_RESOURCE[options.resource] ?? options.resource;
+      url = this.structureUrl(
+        `${resource}/${FmrClient.segment(options.agency, "*")}/${FmrClient.segment(options.id, "*")}/${FmrClient.segment(options.version, "~")}`,
+        { references: options.references ?? "none", detail: options.detail },
+      );
+      accept = STRUCTURE_JSON;
+    } else {
+      const version = options.version && options.version !== "~" ? options.version : "latest";
+      url = `${this.config.baseUrl}/ws/public/sdmxapi/rest/${encodeURIComponent(options.resource)}/${encodeURIComponent(options.agency)}/${encodeURIComponent(options.id)}/${encodeURIComponent(version)}?references=${encodeURIComponent(options.references ?? "none")}${options.detail ? `&detail=${encodeURIComponent(options.detail)}` : ""}`;
+      accept = STRUCTURE_XML;
+    }
+    const response = await ensureOk(await this.http.request(url, { headers: { Accept: accept, ...this.authHeaders() } }), url);
     const body = await response.text();
     const maxChars = options.maxChars ?? 50_000;
     return {
-      endpoint,
+      endpoint: url,
+      format,
       contentType: response.headers.get("content-type"),
       totalChars: body.length,
       truncated: body.length > maxChars,
-      xml: body.slice(0, maxChars),
+      body: body.slice(0, maxChars),
+      hint: body.length > maxChars ? "Truncated. Prefer fmr_describe_dataflow / fmr_get_codes, or use detail=allstubs." : undefined,
     };
   }
 
-  async loadData(filePath: string): Promise<Record<string, unknown>> {
-    const resolved = this.assertAllowed(filePath);
-    const bytes = await readFile(resolved);
-    if (bytes.byteLength > this.maxFileBytes) {
-      throw new Error(`File exceeds FMR_MAX_FILE_MB limit (${bytes.byteLength} bytes).`);
-    }
-    const form = new FormData();
-    form.append("uploadFile", new Blob([bytes]), path.basename(resolved));
-    const response = await fetch(`${this.baseUrl}/ws/public/data/load`, {
-      method: "POST",
-      headers: this.authHeaders(),
-      body: form,
-    });
-    if (!response.ok) throw await this.responseError(response);
-    const result = await response.json() as Record<string, unknown>;
-    const uid = String(result.uid ?? result.UID ?? "");
-    if (!uid) throw new Error(`FMR did not return a dataset uid: ${JSON.stringify(result)}`);
-    this.rememberSession(uid, response);
-    return { ...result, uid, filePath: resolved, sizeBytes: bytes.byteLength };
+  private async dataflowMessage(lookup: DataflowLookup): Promise<{ message: J; ref: ArtefactRef }> {
+    const ref = this.resolveDataflow(lookup);
+    const url = this.structureUrl(
+      `dataflow/${FmrClient.segment(ref.agency, "TNSO")}/${FmrClient.segment(ref.id, "*")}/${FmrClient.segment(ref.version, "~")}`,
+      { references: "all" },
+    );
+    return { message: await this.getStructureJson(url), ref };
   }
 
-  async getValidationStatus(uid: string): Promise<Record<string, unknown>> {
-    const response = await fetch(`${this.baseUrl}/ws/public/data/loadStatus?uid=${encodeURIComponent(uid)}`, {
-      headers: { Accept: "application/json", ...this.authHeaders(), ...this.sessionHeaders(uid) },
+  async describeDataflow(lookup: DataflowLookup): Promise<DataflowDescription> {
+    const { message, ref } = await this.dataflowMessage(lookup);
+    return describeDataflowMessage(message, ref, this.config.language);
+  }
+
+  /** describeDataflow with long allowed-code lists shortened for display. */
+  async describeDataflowForDisplay(lookup: DataflowLookup, maxAllowedCodes = 50): Promise<DataflowDescription> {
+    const description = await this.describeDataflow(lookup);
+    const cap = <T extends { allowedCodes?: string[] }>(component: T): T => (
+      component.allowedCodes && component.allowedCodes.length > maxAllowedCodes
+        ? { ...component, allowedCodes: component.allowedCodes.slice(0, maxAllowedCodes) }
+        : component
+    );
+    return { ...description, dimensions: description.dimensions.map(cap), attributes: description.attributes.map(cap) };
+  }
+
+  private async codesFor(options: {
+    codelistUrn?: string;
+    agency?: string;
+    id?: string;
+    version?: string;
+    dataflow?: DataflowLookup;
+    component?: string;
+  }): Promise<{ codelist: ArtefactRef & { urn?: string; name?: string }; codes: CodeInfo[]; allowed?: Set<string>; componentId?: string }> {
+    if (options.dataflow && options.component) {
+      const { message, ref } = await this.dataflowMessage(options.dataflow);
+      const description = describeDataflowMessage(message, ref, this.config.language);
+      const wanted = options.component.toUpperCase();
+      const component = [...description.dimensions, ...description.attributes, ...(description.timeDimension ? [description.timeDimension] : [])]
+        .find((item) => item.id.toUpperCase() === wanted);
+      if (!component) {
+        const ids = [...description.dimensions, ...description.attributes].map((item) => item.id).join(", ");
+        throw new Error(`Component ${options.component} is not in ${description.structureId}. Components: ${ids}`);
+      }
+      if (!component.codelist) throw new Error(`Component ${component.id} is not coded (data type ${component.dataType ?? "unknown"}).`);
+      // Use the codelist version the DSD references, not the latest one.
+      let codelistNode = findCodelist(message, component.codelist);
+      if (!codelistNode) {
+        const url = this.structureUrl(`codelist/${component.codelist.agency}/${component.codelist.id}/${component.codelist.version}`);
+        codelistNode = findCodelist(await this.getStructureJson(url), component.codelist);
+      }
+      if (!codelistNode) throw new Error(`Codelist ${refKey(component.codelist)} not found in FMR.`);
+      const allowedCodes = (component as { allowedCodes?: string[] }).allowedCodes;
+      return {
+        codelist: { ...component.codelist },
+        codes: codesFromCodelist(codelistNode, this.config.language),
+        allowed: allowedCodes ? new Set(allowedCodes) : undefined,
+        componentId: component.id,
+      };
+    }
+    let ref: ArtefactRef;
+    if (options.codelistUrn) {
+      const parsed = parseUrn(options.codelistUrn);
+      if (!parsed || !/Codelist$/.test(parsed.className)) throw new Error(`Not a codelist URN: ${options.codelistUrn}`);
+      ref = parsed;
+    } else if (options.id) {
+      ref = { agency: options.agency || "TNSO", id: options.id, version: options.version || "~" };
+    } else {
+      throw new Error("Give codelist_urn, or codelist id (+ agency, version), or dataflow + component.");
+    }
+    const url = this.structureUrl(`codelist/${FmrClient.segment(ref.agency, "TNSO")}/${FmrClient.segment(ref.id, "*")}/${FmrClient.segment(ref.version, "~")}`);
+    const node = findCodelist(await this.getStructureJson(url), ref);
+    if (!node) throw new Error(`Codelist ${refKey(ref)} not found in FMR.`);
+    const actual = { agency: String(node.agencyID), id: String(node.id), version: String(node.version) };
+    return { codelist: { ...actual, urn: `urn:sdmx:org.sdmx.infomodel.codelist.Codelist=${refKey(actual)}` }, codes: codesFromCodelist(node, this.config.language) };
+  }
+
+  async getCodes(options: {
+    codelistUrn?: string;
+    agency?: string;
+    id?: string;
+    version?: string;
+    dataflow?: DataflowLookup;
+    component?: string;
+    search?: string;
+    parent?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<Record<string, unknown>> {
+    const { codelist, codes, allowed, componentId } = await this.codesFor(options);
+    const result = searchCodes(codes, { search: options.search, parent: options.parent, limit: options.limit ?? 50, offset: options.offset ?? 0 });
+    return {
+      codelist,
+      component: componentId,
+      totalCodes: codes.length,
+      totalMatched: result.totalMatched,
+      offset: options.offset ?? 0,
+      returned: result.codes.length,
+      codes: result.codes.map((code) => ({
+        id: code.id,
+        name: code.name,
+        ...(code.parent ? { parent: code.parent } : {}),
+        ...(allowed ? { allowed: allowed.has(code.id) } : {}),
+      })),
+    };
+  }
+
+  async mapCodes(options: {
+    dataflow: DataflowLookup;
+    component: string;
+    values: string[];
+    outputPath?: string;
+    overwrite?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const { codelist, codes, allowed, componentId } = await this.codesFor({ dataflow: options.dataflow, component: options.component });
+    const matches = matchValues(options.values, codes, allowed);
+    const summary: Record<string, number> = {};
+    for (const match of matches) summary[match.status] = (summary[match.status] ?? 0) + 1;
+    const mapping = Object.fromEntries(matches.filter((match) => match.status === "matched").map((match) => [match.input, match.code]));
+
+    let written: string | undefined;
+    if (options.outputPath) {
+      const target = await this.prepareOutput(options.outputPath, options.overwrite ?? false);
+      const lines = [csvLine(["input", "occurrences", "status", "code", "name", "confidence", "method", "candidates"])];
+      for (const match of matches) {
+        lines.push(csvLine([
+          match.input, String(match.occurrences), match.status, match.code ?? "", match.name ?? "",
+          match.confidence !== undefined ? String(match.confidence) : "", match.method ?? "",
+          (match.candidates ?? []).map((candidate) => `${candidate.code} ${candidate.name ?? ""} (${candidate.confidence})`).join(" | "),
+        ]));
+      }
+      // BOM so Excel opens Thai text correctly.
+      await writeFile(target, `﻿${lines.join("\r\n")}\r\n`, "utf8");
+      written = target;
+    }
+    return {
+      codelist,
+      component: componentId,
+      distinctValues: matches.length,
+      summary,
+      mapping,
+      review: matches.filter((match) => match.status !== "matched" && match.status !== "blank"),
+      matchedDetails: matches.filter((match) => match.status === "matched" && match.method !== "id" && match.method !== "name")
+        .map(({ input, code, name, method, confidence }) => ({ input, code, name, method, confidence })),
+      outputPath: written,
+      note: "Only 'matched' values are safe to apply automatically. A person must confirm 'needs_review' and 'ambiguous' values. Blank values are missing data, not zero.",
+    };
+  }
+
+  async csvTemplate(options: { dataflow: DataflowLookup; outputPath?: string; includeOptionalAttributes?: boolean; overwrite?: boolean }): Promise<Record<string, unknown>> {
+    const description = await this.describeDataflow(options.dataflow);
+    const include = options.includeOptionalAttributes ?? false;
+    const header = csvHeader(description, include);
+    const columns = csvColumnGuide(description, include);
+    let written: string | undefined;
+    if (options.outputPath) {
+      const target = await this.prepareOutput(options.outputPath, options.overwrite ?? false);
+      await writeFile(target, `${csvLine(header)}\r\n`, "utf8");
+      written = target;
+    }
+    const example = columns.map((column) => column.value ?? (column.role === "measure" ? "" : `<${column.column}>`));
+    return {
+      dataflow: description.urn,
+      structureId: description.structureId,
+      format: "SDMX-CSV 2.0",
+      header,
+      exampleRow: csvLine(example),
+      columns,
+      outputPath: written,
+      notes: [
+        "Each row is one observation. Put codes (not labels) in coded columns; use fmr_map_codes to convert labels.",
+        "A file with STRUCTURE/STRUCTURE_ID columns identifies its own structure, so no structure_refs are needed.",
+        "Save as UTF-8.",
+      ],
+    };
+  }
+
+  // ------------------------------------------------------------ data
+
+  async loadData(filePath: string): Promise<Record<string, unknown>> {
+    const resolved = this.assertAllowed(filePath);
+    const info = await stat(resolved).catch(() => {
+      throw new Error(`File not found: ${resolved}`);
     });
-    if (!response.ok) throw await this.responseError(response);
-    return await response.json() as Record<string, unknown>;
+    if (!info.isFile()) throw new Error(`Not a file: ${resolved}`);
+    if (info.size > this.config.maxFileBytes) {
+      throw new Error(`File is ${(info.size / 1048576).toFixed(1)} MB, over the FMR_MAX_FILE_MB limit of ${(this.config.maxFileBytes / 1048576).toFixed(1)} MB.`);
+    }
+    if (info.size === 0) throw new Error(`File is empty: ${resolved}`);
+    const bytes = await readFile(resolved);
+    const form = new FormData();
+    form.append("uploadFile", new Blob([bytes]), path.basename(resolved));
+    const url = `${this.config.baseUrl}/ws/public/data/load`;
+    const response = await ensureOk(await this.http.request(url, {
+      method: "POST",
+      headers: { Accept: "application/json", ...this.authHeaders() },
+      body: form,
+      timeoutMs: this.config.uploadTimeoutMs,
+    }), url);
+    const text = await response.text();
+    let result: J;
+    try {
+      result = JSON.parse(text);
+    } catch {
+      throw new FmrHttpError(`FMR load returned non-JSON: ${text.slice(0, 500)}`);
+    }
+    if (result?.Success === false) throw new Error(`FMR rejected the upload: ${JSON.stringify(result).slice(0, 1000)}`);
+    const uid = String(result?.uid ?? result?.UID ?? "");
+    if (!uid) throw new Error(`FMR did not return a dataset uid: ${JSON.stringify(result).slice(0, 1000)}`);
+    this.rememberSession(uid, response.headers.getSetCookie?.() ?? [], resolved);
+    return {
+      uid,
+      filePath: resolved,
+      sizeBytes: info.size,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      uploadedAt: new Date().toISOString(),
+    };
+  }
+
+  /** Raw FMR validation report. Throws a clear error for unknown/expired uids. */
+  async getValidationReport(uid: string): Promise<J> {
+    const url = `${this.config.baseUrl}/ws/public/data/loadStatus?uid=${encodeURIComponent(uid)}`;
+    const response = await this.http.request(url, { headers: { Accept: "application/json", ...this.authHeaders(), ...this.sessionHeaders(uid) } });
+    const text = await response.text();
+    let report: J;
+    try {
+      report = JSON.parse(text);
+    } catch {
+      if (!response.ok) throw new FmrHttpError(`FMR loadStatus failed (${response.status}): ${text.slice(0, 500)}`, response.status, text);
+      throw new FmrHttpError(`FMR loadStatus returned non-JSON: ${text.slice(0, 500)}`);
+    }
+    // FMR answers HTTP 400 with a JSON report for unreadable data / bad refs; keep those.
+    const envelope = errorEnvelope(report);
+    if (envelope && /no dataset details found|not found|expired/i.test(envelope)) {
+      throw new Error(`FMR has no dataset for uid ${uid}: ${envelope}. ${this.expiryHint(uid)}`);
+    }
+    if (!response.ok && typeof report?.Status !== "string") {
+      throw new FmrHttpError(`FMR loadStatus failed (${response.status}): ${text.slice(0, 500)}`, response.status, text);
+    }
+    this.touch(uid);
+    return report;
+  }
+
+  async getValidationStatus(uid: string, options: { detail?: "summary" | "full"; reportPath?: string; overwrite?: boolean } & SummaryOptions = {}): Promise<Record<string, unknown>> {
+    const report = await this.getValidationReport(uid);
+    const written = options.reportPath ? await this.writeReport(report, options.reportPath, options.overwrite ?? true) : undefined;
+    if (options.detail === "full") return { uid, reportPath: written, report };
+    return { uid, reportPath: written, summary: summarizeValidation(report, options) };
+  }
+
+  private async writeReport(report: J, reportPath: string, overwrite: boolean): Promise<string> {
+    const target = await this.prepareOutput(reportPath, overwrite);
+    await writeFile(target, JSON.stringify(report, null, 2), "utf8");
+    return target;
   }
 
   async revalidate(uid: string, structureRefs: string[]): Promise<Record<string, unknown>> {
-    const response = await fetch(`${this.baseUrl}/ws/public/data/revalidate`, {
+    for (const ref of structureRefs) {
+      const parsed = parseUrn(ref);
+      if (!parsed || !/(Dataflow|DataStructure|ProvisionAgreement)$/.test(parsed.className)) {
+        throw new Error(`structure_refs must be Dataflow, DataStructure or ProvisionAgreement URNs; got ${ref}`);
+      }
+    }
+    const url = `${this.config.baseUrl}/ws/public/data/revalidate`;
+    const response = await this.http.request(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        ...this.authHeaders(),
-        ...this.sessionHeaders(uid),
-      },
+      headers: { "Content-Type": "application/json", Accept: "application/json", ...this.authHeaders(), ...this.sessionHeaders(uid) },
       body: JSON.stringify({ UID: uid, SRef: structureRefs }),
     });
-    if (!response.ok) throw await this.responseError(response);
-    return await response.json() as Record<string, unknown>;
+    const text = await response.text();
+    if (!response.ok) throw new FmrHttpError(`FMR revalidate failed (${response.status}): ${text.slice(0, 1000)}. ${this.expiryHint(uid)}`, response.status, text);
+    let result: J = {};
+    try {
+      result = text ? JSON.parse(text) : {};
+    } catch {
+      result = { raw: text.slice(0, 500) };
+    }
+    if (result?.Success === false) throw new Error(`FMR refused revalidation: ${text.slice(0, 1000)}`);
+    this.touch(uid);
+    return { uid, structureRefs, ...result };
   }
 
   async download(options: {
@@ -282,9 +634,10 @@ export class FmrClient {
     zip?: boolean;
     includeMetrics?: boolean;
     unmapped?: boolean;
+    overwrite?: boolean;
   }): Promise<Record<string, unknown>> {
     const format = OUTPUT_FORMATS[options.outputFormat];
-    const outputPath = this.assertAllowed(options.outputPath);
+    const outputPath = await this.prepareOutput(options.outputPath, options.overwrite ?? false);
     const params = new URLSearchParams({
       uid: options.uid,
       datasetIndex: String(options.datasetIndex ?? 0),
@@ -293,81 +646,144 @@ export class FmrClient {
       unmapped: String(options.unmapped ?? false),
     });
     if (options.mapUrn) params.set("map", options.mapUrn);
-    const endpoint = `${this.baseUrl}/ws/public/data/download?${params}`;
-    const response = await fetch(endpoint, {
+    const url = `${this.config.baseUrl}/ws/public/data/download?${params}`;
+    const response = await this.http.request(url, {
       headers: { Accept: format.accept, ...this.authHeaders(), ...this.sessionHeaders(options.uid) },
+      timeoutMs: this.config.uploadTimeoutMs,
     });
-    if (!response.ok) throw await this.responseError(response);
+    if (!response.ok) {
+      const body = (await response.text()).slice(0, 1000);
+      throw new FmrHttpError(`FMR download failed (${response.status}): ${body}. ${/not found|uid/i.test(body) ? this.expiryHint(options.uid) : ""}`, response.status, body);
+    }
     const bytes = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type") ?? "";
+    if (/json/i.test(contentType) && !/json/i.test(format.accept) && !options.zip) {
+      const text = bytes.toString("utf8");
+      if (/"Error"/.test(text)) throw new Error(`FMR returned an error instead of data: ${text.slice(0, 1000)}. ${this.expiryHint(options.uid)}`);
+    }
+    if (bytes.byteLength === 0) throw new Error("FMR returned an empty file. Check datasetIndex and the validation status.");
     await writeFile(outputPath, bytes);
+    this.touch(options.uid);
+    const expectedExtension = options.zip ? ".zip" : format.extension;
     return {
       uid: options.uid,
       outputFormat: options.outputFormat,
       outputPath,
       sizeBytes: bytes.byteLength,
-      contentType: response.headers.get("content-type"),
-      endpoint,
+      contentType,
+      ...(path.extname(outputPath).toLowerCase() !== expectedExtension
+        ? { warning: `Output file extension is ${path.extname(outputPath) || "(none)"}; ${expectedExtension} is expected for ${options.zip ? "zip" : options.outputFormat}.` }
+        : {}),
     };
   }
 
-  async waitForTerminal(uid: string, timeoutSeconds = 120, pollIntervalMs = 1500): Promise<Record<string, unknown>> {
+  async waitForTerminal(uid: string, timeoutSeconds = 120): Promise<J> {
     const deadline = Date.now() + timeoutSeconds * 1000;
-    let status: Record<string, unknown> = {};
-    while (Date.now() < deadline) {
-      status = await this.getValidationStatus(uid);
-      if (isTerminalStatus(status.Status)) return status;
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    let report: J = {};
+    let delay = 1000;
+    for (;;) {
+      report = await this.getValidationReport(uid);
+      if (isTerminalStatus(report?.Status)) return report;
+      const envelope = errorEnvelope(report);
+      if (envelope) throw new Error(`FMR reported an error for uid ${uid}: ${envelope}`);
+      if (Date.now() + delay > deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(Math.round(delay * 1.5), 5000);
     }
-    throw new Error(`Timed out after ${timeoutSeconds}s waiting for FMR validation. Last status: ${JSON.stringify(status)}`);
+    throw new Error(`Timed out after ${timeoutSeconds}s waiting for FMR validation (last status: ${report?.Status ?? "unknown"}). Call fmr_get_validation_status with uid ${uid} to keep checking.`);
+  }
+
+  /** Upload, wait, and revalidate with structure refs when FMR needs them. */
+  async validateFile(options: {
+    inputPath: string;
+    structureRefs?: string[];
+    timeoutSeconds?: number;
+    reportPath?: string;
+  } & SummaryOptions): Promise<{ uid: string; load: Record<string, unknown>; report: J; summary: ValidationSummary; revalidated: boolean; reportPath?: string }> {
+    const load = await this.loadData(options.inputPath);
+    const uid = String(load.uid);
+    let report = await this.waitForTerminal(uid, options.timeoutSeconds ?? 120);
+    let revalidated = false;
+    if (STRUCTURE_STATUSES.has(report.Status) && options.structureRefs?.length) {
+      await this.revalidate(uid, options.structureRefs);
+      revalidated = true;
+      report = await this.waitForTerminal(uid, options.timeoutSeconds ?? 120);
+    }
+    const reportPath = options.reportPath ? await this.writeReport(report, options.reportPath, true) : undefined;
+    return { uid, load, report, summary: summarizeValidation(report, options), revalidated, reportPath };
+  }
+
+  async validateOnly(options: { inputPath: string; structureRefs?: string[]; timeoutSeconds?: number; reportPath?: string } & SummaryOptions): Promise<Record<string, unknown>> {
+    const result = await this.validateFile(options);
+    return {
+      uid: result.uid,
+      load: result.load,
+      revalidated: result.revalidated,
+      reportPath: result.reportPath,
+      summary: result.summary,
+      nextStep: result.summary.verdict === "structure_problem" && !options.structureRefs?.length
+        ? STATUS_HINTS[result.summary.status]
+        : result.summary.verdict === "clean" || result.summary.verdict === "has_errors_but_convertible"
+          ? `Use fmr_download with uid ${result.uid} within ~${Math.round(this.config.sessionTtlMs / 60_000)} minutes to get a converted file.`
+          : undefined,
+    };
   }
 
   async transformData(options: {
     inputPath: string;
     outputPath: string;
     outputFormat: OutputFormat;
-    structureRef?: string;
+    structureRefs?: string[];
     timeoutSeconds?: number;
     datasetIndex?: number;
-  }): Promise<Record<string, unknown>> {
-    const load = await this.loadData(options.inputPath);
-    const uid = String(load.uid);
-    let validation = await this.waitForTerminal(uid, options.timeoutSeconds ?? 120);
-    if (validation.Status === "MissingDSD" && options.structureRef) {
-      await this.revalidate(uid, [options.structureRef]);
-      validation = await this.waitForTerminal(uid, options.timeoutSeconds ?? 120);
+    overwrite?: boolean;
+    reportPath?: string;
+  } & SummaryOptions): Promise<Record<string, unknown>> {
+    // Fail fast on the output location before uploading anything.
+    const outputPath = this.assertAllowed(options.outputPath);
+    if (!options.overwrite && await access(outputPath).then(() => true, () => false)) {
+      throw new Error(`Output file already exists: ${outputPath}. Pass overwrite=true to replace it.`);
     }
-    const preventsConversion = validation.PreventsConversion === true;
-    if (validation.Status !== "Complete" || preventsConversion) {
+    const reportPath = options.reportPath ?? `${outputPath}.validation.json`;
+    this.assertAllowed(reportPath);
+    await mkdir(path.dirname(outputPath), { recursive: true });
+
+    const result = await this.validateFile({ ...options, reportPath });
+    const { summary } = result;
+    if (summary.status !== "Complete" || summary.preventsConversion === true) {
       return {
         success: false,
-        uid,
-        load,
-        validation,
-        message: "FMR did not produce a convertible dataset. Review validation details; no output file was written.",
+        uid: result.uid,
+        load: result.load,
+        revalidated: result.revalidated,
+        reportPath: result.reportPath,
+        summary,
+        message: "FMR did not produce a convertible dataset; no output file was written. "
+          + (summary.hint ?? "Review the validation summary."),
       };
     }
     const download = await this.download({
-      uid,
+      uid: result.uid,
       outputFormat: options.outputFormat,
-      outputPath: options.outputPath,
+      outputPath,
       datasetIndex: options.datasetIndex,
+      overwrite: options.overwrite,
     });
-    return { success: true, uid, load, validation, download };
+    return {
+      success: true,
+      uid: result.uid,
+      load: result.load,
+      revalidated: result.revalidated,
+      reportPath: result.reportPath,
+      summary,
+      download,
+      message: summary.hasErrors
+        ? `Converted, but FMR reported ${summary.totalErrors} validation error(s). Report them before the file is used; conversion is not publication.`
+        : "Converted with no validation errors. Conversion is not publication.",
+    };
   }
 }
 
-export function clientFromEnvironment(): FmrClient {
-  const allowedRoots = process.env.FMR_ALLOWED_ROOTS
-    ?.split(";")
-    .map((root) => root.trim())
-    .filter(Boolean);
-  const maxMb = Number(process.env.FMR_MAX_FILE_MB ?? "100");
-  if (!Number.isFinite(maxMb) || maxMb <= 0) throw new Error("FMR_MAX_FILE_MB must be a positive number.");
-  return new FmrClient({
-    baseUrl: process.env.FMR_BASE_URL,
-    allowedRoots,
-    maxFileBytes: maxMb * 1024 * 1024,
-    username: process.env.FMR_USERNAME,
-    password: process.env.FMR_PASSWORD,
-  });
+export function clientFromEnvironment(env: NodeJS.ProcessEnv = process.env): FmrClient {
+  return new FmrClient(configFromEnv(env));
 }
