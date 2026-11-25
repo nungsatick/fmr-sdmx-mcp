@@ -3,11 +3,11 @@
     "fmr-sdmx-mcp": {
       "command": "node",
       "args": [
-        "C:\\Users\\nungs\\Documents\\work_directory\\korea_Itinerary\\fmr-sdmx-mcp\\dist\\index.js"
+        "C:\\path\\to\\fmr-sdmx-mcp\\dist\\index.js"
       ],
       "env": {
         "FMR_BASE_URL": "https://fmr-sdmx.nso.go.th/fmr",
-        "FMR_ALLOWED_ROOTS": "C:\\Users\\nungs\\Documents\\work_directory",
+        "FMR_ALLOWED_ROOTS": "C:\\data\\sdmx",
         "FMR_LANGUAGE": "th"
       }
     }
